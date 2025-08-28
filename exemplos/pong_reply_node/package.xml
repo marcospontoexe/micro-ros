@@ -1,0 +1,14 @@
+<package format="3">
+  <name>pong_reply_node</name>
+  <version>0.0.0</version>
+  <description>Simple ROS 2 node that replies to ping messages</description>
+  <maintainer email="user@todo.todo">user</maintainer>
+  <license>MIT</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
