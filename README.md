@@ -109,3 +109,76 @@ Ao trabalhar com o microROS, o fluxo de trabalho geral se parece com o seguinte:
 * Instalar o firmware no microcontrolador
 * Executar o Agente microROS em um host Linux
 * Monitorar e interagir usando ferramentas e nós do ROS 2
+
+## Exemplo prático
+Veja um sistema de comunicação entre dois nós ROS: um rodando em um **microcontrolador ESP32** e o outro rodando no seu **computador**.
+
+Simularemos uma interação de pingue-pongue:
+
+* O nó ESP32 (**cliente microROS**) envia uma mensagem "**ping**" para um tópico.
+* Um **nó ROS2** recebe o **ping** e responde com um "**pong**".
+* O **ESP32** recebe o **pong** e envia outro **ping** — repetindo o ciclo.
+
+Para tornar isso possível, você configurará três componentes principais:
+
+1. O **cliente micro-ROS do ESP32** — Um pequeno programa no ESP32 que se conecta ao Wi-Fi, publica mensagens em um tópico **/ping** e escuta as respostas no tópico **/pong**.
+2. O **Agente micro-ROS** — Uma ferramenta especial que atua como uma ponte entre o ESP32 e a rede ROS 2 do seu computador. Ele escuta as mensagens **UDP do ESP32** e as encaminha para o ecossistema ROS 2.
+3. O [**nó "Pong" do ROS 2**](https://github.com/marcospontoexe/micro-ros/blob/main/exemplos/pong_reply_node/pong_reply_node/pong.py) — Um nó ROS2 típico em execução no seu **computador** que escuta **pings**, registra as mensagens e envia respostas do tipo **pong**.
+
+O diagrama abaixo mostra o fluxo de comunicação:
+
+![U2_ping_pong_workflow](https://github.com/marcospontoexe/micro-ros/blob/main/imagens/U2_ping_pong_workflow.png)
+
+### Agente Micro Ros
+O Agente micro-ROS é construído usando um conjunto de pacotes compatíveis com ROS 2 que gerenciam redes de baixo nível, tradução DDS, serialização e protocolos de comunicação.
+
+Você usará os scripts micro_ros_setup para automatizar o processo de preparação, construção e instalação do agente.
+
+Agora criamos um novo espaço de trabalho que hospedará as ferramentas de configuração do micro-ROS (**Esse será um novo espaço de trabahlo, antão não deve ser criado dentro do diretório ros2_ws, e sim um diretório a cima, por exemplo /home/user/microros_ws/**):
+
+```shell
+cd ~
+mkdir microros_ws
+cd microros_ws
+git clone -b $ROS_DISTRO https://github.com/micro-ROS/micro_ros_setup.git src/micro_ros_setup
+```
+
+A linha acima baixa os scripts de configuração, correspondentes à sua distribuição ROS 2 (por exemplo, humble), para a pasta src do seu novo espaço de trabalho.
+
+Antes de compilar qualquer coisa, precisamos garantir que todas as dependências necessárias estejam disponíveis. Isso inclui bibliotecas usadas para comunicação, compilação e suporte a transporte:
+
+```shell
+sudo apt update && rosdep update
+rosdep install --from-paths src --ignore-src -y
+```
+
+Agora, crie o espaço de trabalho de configuração do micro-ROS e crie-o para que você possa usar os comandos de configuração incluídos:
+
+```shell
+cd ~/microros_ws/
+colcon build
+source install/local_setup.bash
+```
+
+Neste ponto, você já tem as ferramentas de configuração disponíveis. Agora, criaremos o espaço de trabalho do agente usando um script fornecido pelo micro-ROS: 
+
+```shell
+cd ~/microros_ws/
+ros2 run micro_ros_setup create_agent_ws.sh
+```
+
+Este comando prepara um espaço de trabalho aninhado dentro do seu atual.
+
+Ele baixa e configura todo o código-fonte necessário para o agente em si — incluindo bibliotecas de transporte, serialização, pontes DDS e o executável micro_ros_agent.
+
+Vamos construir o agente agora:
+
+```shell
+cd ~/microros_ws/
+ros2 run micro_ros_setup build_agent.sh
+source install/local_setup.bash
+```
+
+Quando isso terminar, seu sistema terá o agente instalado e pronto para ser executado.
+
+###  Installing Docker
