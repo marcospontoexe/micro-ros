@@ -134,7 +134,7 @@ O Agente micro-ROS é construído usando um conjunto de pacotes compatíveis com
 
 Você usará os scripts micro_ros_setup para automatizar o processo de preparação, construção e instalação do agente.
 
-Agora criamos um novo espaço de trabalho que hospedará as ferramentas de configuração do micro-ROS (**Esse será um novo espaço de trabahlo, antão não deve ser criado dentro do diretório ros2_ws, e sim um diretório a cima, por exemplo /home/user/microros_ws/**):
+Agora criamos um novo espaço de trabalho que hospedará as ferramentas de configuração do micro-ROS (**Esse será um novo espaço de trabalho, antão não deve ser criado dentro do diretório ros2_ws, e sim um diretório a cima, por exemplo /home/user/microros_ws/**):
 
 ```shell
 cd ~
@@ -181,4 +181,5 @@ source install/local_setup.bash
 
 Quando isso terminar, seu sistema terá o agente instalado e pronto para ser executado.
 
-###  Installing Docker
+####  Executando o agente microROS
+Agora, vamos iniciar o Agente, que escuta mensagens **UDP do ESP32** e as insere no ecossistema ROS 2.
