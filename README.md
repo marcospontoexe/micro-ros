@@ -183,3 +183,34 @@ Quando isso terminar, seu sistema terá o agente instalado e pronto para ser exe
 
 ####  Executando o agente microROS
 Agora, vamos iniciar o Agente, que escuta mensagens **UDP do ESP32** e as insere no ecossistema ROS 2.
+
+```shell
+cd ~/microros_ws
+source install/local_setup.bash
+ros2 run micro_ros_agent micro_ros_agent udp4 --port 8888
+```
+
+Isso iniciará o agente usando UDP sobre IPv4, escutando na porta 8888, exatamente como o seu ESP32 estará configurado para usar.
+
+No terminal, você deverá ver uma saída como a seguinte:
+
+```shell
+[1679041670.087954] info     | UDPv4AgentLinux.cpp | init                     | running...             | port: 8888
+[1679041670.088013] info     | Root.cpp            | set_verbose_level        | logger setup           | verbose_level: 4
+```
+
+Isso significa que o agente foi iniciado com sucesso e está escutando na porta 8888.
+
+Você deve prestar atenção à direção desta porta, pois é importante estabelecer uma comunicação WiFi.
+
+#### O agente IP
+Para estabelecer um link de comunicação bem-sucedido entre o seu ESP32 e o agente micro-ROS em execução no seu computador, precisamos de duas informações essenciais:
+
+* O **endereço IP do computador (host)** onde o agente está em execução.
+* O **número da porta** onde o agente está escutando as mensagens micro-ROS recebidas.
+
+Pense no seu endereço IP como o "endereço" do seu computador na sua rede local. Mas, assim como um prédio de apartamentos tem muitas portas e caixas de correio diferentes, seu computador tem muitos serviços em execução em portas diferentes. Um número de porta é como uma caixa de correio ou número de quarto específico — ele ajuda a encaminhar a mensagem para o aplicativo correto no seu computador.
+
+Quando você conecta seu ESP32 ao Wi-Fi, ele se torna um dispositivo na sua rede local (LAN), assim como seu laptop ou desktop. Cada dispositivo conectado ao mesmo roteador recebe um endereço IP local exclusivo — normalmente algo como 192.168.0.24. Esses endereços permitem que os dispositivos "vejam" e se comuniquem entre si dentro da rede.
+
+![U2_IP_adress](https://github.com/marcospontoexe/micro-ros/blob/main/imagens/U2_IP_adress.png)
