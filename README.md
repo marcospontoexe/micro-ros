@@ -214,3 +214,11 @@ Pense no seu endereço IP como o "endereço" do seu computador na sua rede local
 Quando você conecta seu ESP32 ao Wi-Fi, ele se torna um dispositivo na sua rede local (LAN), assim como seu laptop ou desktop. Cada dispositivo conectado ao mesmo roteador recebe um endereço IP local exclusivo — normalmente algo como 192.168.0.24. Esses endereços permitem que os dispositivos "vejam" e se comuniquem entre si dentro da rede.
 
 ![U2_IP_adress](https://github.com/marcospontoexe/micro-ros/blob/main/imagens/U2_IP_adress.png)
+
+O UDP (User Datagram Protocol) é um dos principais protocolos do conjunto de protocolos de internet. Ao contrário do TCP, ele não possui conexão, o que significa que envia mensagens (chamadas datagramas) sem estabelecer uma conexão confiável. Ele não garante a entrega ou a ordem, mas é extremamente rápido e leve — ideal para tarefas de robótica em tempo real, como atualizações de sensores, comandos de atuadores ou mensagens simples de pingue-pongue, que são pequenas ou atualizadas com frequência e não exigem confirmação.
+
+É por isso que o micro-ROS frequentemente usa o UDP: ele permite a transmissão de dados de baixa latência entre o agente (no seu PC) e o microcontrolador (ESP32), especialmente em ambientes embarcados com restrições.
+
+Na seção anterior, definimos manualmente a porta como 8888. Este número não foi escolhido arbitrariamente: embora tecnicamente qualquer porta UDP livre (portas são números de 0 a 65535) possa ser usada, 8888 se tornou uma espécie de convenção informal na comunidade de robótica ao configurar comunicações micro-ROS. Isso mantém a previsibilidade e evita conflitos com outros serviços.
+
+Resta determinar o endereço IP do seu computador na rede Wi-Fi local. Este é o endereço que o cliente ESP32 usará para enviar mensagens UDP ao agente.
