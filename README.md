@@ -782,17 +782,7 @@ Isso inclui o tempo de execução do micro-ROS, o suporte a tipos de mensagens e
 
 
 
-```sh
-#!/bin/bash
-CONFIG=/tmp/cli.yaml
 
-arduino-cli config init --config-file /tmp/cli.yaml
-arduino-cli config set directories.user /opt/arduino --config-file $CONFIG
-arduino-cli config set directories.data /opt/arduino --config-file $CONFIG
-arduino-cli config set directories.downloads /opt/arduino/staging --config-file $CONFIG
-arduino-cli config add board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json --config-file $CONFIG
-arduino-cli core update-index --config-file $CONFIG
-arduino-cli core install esp32:esp32 --config-file $CONFIG
 
-echo "✅ Arduino CLI is ready."
-```
+
+
