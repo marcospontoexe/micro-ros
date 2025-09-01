@@ -129,7 +129,7 @@ O diagrama abaixo mostra o fluxo de comunicação:
 
 ![U2_ping_pong_workflow](https://github.com/marcospontoexe/micro-ros/blob/main/imagens/U2_ping_pong_workflow.png)
 
-### Agente Micro Ros
+## Agente Micro Ros
 O Agente micro-ROS é construído usando um conjunto de pacotes compatíveis com ROS 2 que gerenciam redes de baixo nível, tradução DDS, serialização e protocolos de comunicação.
 
 Você usará os scripts micro_ros_setup para automatizar o processo de preparação, construção e instalação do agente.
@@ -181,7 +181,7 @@ source install/local_setup.bash
 
 Quando isso terminar, seu sistema terá o agente instalado e pronto para ser executado.
 
-####  Executando o agente microROS
+###  Executando o agente microROS
 Agora, vamos iniciar o Agente, que escuta mensagens **UDP do ESP32** e as insere no ecossistema ROS 2.
 
 ```shell
@@ -203,7 +203,7 @@ Isso significa que o agente foi iniciado com sucesso e está escutando na porta 
 
 Você deve prestar atenção à direção desta porta, pois é importante estabelecer uma comunicação WiFi.
 
-#### O agente IP
+### O agente IP
 Para estabelecer um link de comunicação bem-sucedido entre o seu ESP32 e o agente micro-ROS em execução no seu computador, precisamos de duas informações essenciais:
 
 * O **endereço IP do computador (host)** onde o agente está em execução.
@@ -222,3 +222,360 @@ O UDP (User Datagram Protocol) é um dos principais protocolos do conjunto de pr
 Na seção anterior, definimos manualmente a porta como 8888. Este número não foi escolhido arbitrariamente: embora tecnicamente qualquer porta UDP livre (portas são números de 0 a 65535) possa ser usada, 8888 se tornou uma espécie de convenção informal na comunidade de robótica ao configurar comunicações micro-ROS. Isso mantém a previsibilidade e evita conflitos com outros serviços.
 
 Resta determinar o endereço IP do seu computador na rede Wi-Fi local. Este é o endereço que o cliente ESP32 usará para enviar mensagens UDP ao agente.
+
+## O Cliente micro-ROS 
+
+![microclient.png](https://github.com/marcospontoexe/micro-ros/blob/main/imagens/U2_ping_pong_workflow%20-%20microclient.png)
+
+No cerne de qualquer sistema robótico baseado em ROS 2 está a ideia de comunicação distribuída: sensores, atuadores e nós lógicos, todos trocando dados por meio de tópicos, serviços e ações.
+
+Em uma máquina desktop, isso normalmente significa iniciar um nó ROS 2 — um processo que interage com outros processos por meio do protocolo DDS (Serviço de Distribuição de Dados) subjacente. Esses nós são executados no espaço do usuário, sobre um sistema operacional completo, e dependem de muitas camadas de software, de bibliotecas de middleware a threads POSIX.
+
+Mas robôs reais não são construídos apenas com PCs. Eles exigem microcontroladores — chips pequenos, energeticamente eficientes e baratos que se conectam diretamente a motores, sensores, botões e displays. Esses microcontroladores, no entanto, não podem executar o ROS 2. Eles não possuem um sistema operacional, não podem arcar com a sobrecarga de memória do DDS e não podem participar do gráfico do ROS 2 da mesma forma que um nó Linux completo.
+
+Para resolver isso, o micro-ROS foi criado. Trata-se de uma adaptação enxuta e embarcada da pilha ROS 2 que permite que microcontroladores — como o seu ESP32 — se comportem como nós ROS 2. Eles não executam o DDS, mas podem participar do gráfico ROS 2 por meio do Agente micro-ROS, que atua como uma ponte.
+
+O cliente micro-ROS (o código executado no ESP32) se conecta ao Agente usando um protocolo de comunicação leve (geralmente via serial ou UDP), e o Agente encaminha as mensagens para a rede DDS em nome do microcontrolador.
+
+Portanto, quando falamos do cliente micro-ROS, estamos nos referindo ao conjunto de softwares executado diretamente no ESP32 que:
+
+* Cria um nó ROS
+* Publica e assina tópicos do ROS 2
+* Comunica-se com o Agente usando XRCE-DDS
+* Comporta-se como um nó ROS 2 completo da perspectiva de outros nós no sistema
+
+Este código do cliente é escrito em C e inclui todas as camadas essenciais do ROS 2: rcl, rclc, rmw, definições de mensagens e manipuladores de transporte — mas de forma reduzida e otimizada para executar em algumas centenas de quilobytes de memória.
+
+### Micro-ROS Arduino
+Para executar o código do cliente micro-ROS no ESP32, precisamos compilar esse código em uma imagem de firmware binária e, em seguida, instalá-la na placa.
+
+É aqui que o ecossistema Arduino entra em cena.
+
+O ESP32 é compatível com o sistema de compilação do Arduino — uma coleção de scripts, bibliotecas e cadeias de ferramentas que tornam o desenvolvimento embarcado mais fácil e portátil.
+
+A CLI do Arduino é uma interface de linha de comando que fornece acesso a toda a cadeia de ferramentas do Arduino sem a necessidade de usar uma interface gráfica. Essa ferramenta nos permite:
+
+* Compilar código compatível com o Arduino usando a cadeia de ferramentas do ESP32
+* Incluir automaticamente as bibliotecas e configurações corretas da placa
+* Carregar o binário resultante para o ESP32 via USB
+* Integrar tudo isso em scripts ou fluxos de trabalho de shell
+
+Mas, mais importante, no contexto do micro-ROS, a CLI do Arduino nos fornece uma maneira estruturada e repetível de compilar e instalar firmware compatível com ROS em um microcontrolador. Sem ela, precisaríamos configurar o gcc manualmente, manipular scripts de linker e instalar binários manualmente.
+
+A CLI cuida de tudo isso para nós — ela abstrai os detalhes de configuração da placa e fornece uma interface limpa para construir e implementar firmware.
+
+Para configurar corretamente a interface Arduino CLI na plataforma The Construct, vamos primeiro criar um arquivo de configuração que usaremos para configurar o ambiente neste curso.
+
+```shell
+cd ~
+touch arduino_prepare.sh
+chmod +x arduino_prepare.sh
+```
+
+Agora, vamos adicionar o seguinte código ao arquivo que você acabou de criar.
+
+```sh
+#!/bin/bash
+CONFIG=/tmp/cli.yaml
+
+arduino-cli config init --config-file $CONFIG
+arduino-cli config set directories.user /opt/arduino --config-file $CONFIG
+arduino-cli config set directories.data /opt/arduino --config-file $CONFIG
+arduino-cli config set directories.downloads /opt/arduino/staging --config-file $CONFIG
+arduino-cli config add board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json --config-file $CONFIG
+arduino-cli core update-index --config-file $CONFIG
+arduino-cli core install esp32:esp32 --config-file $CONFIG
+
+echo "✅ Arduino CLI is ready."
+```
+
+Este é um script de configuração que configura o [Arduino CLI](https://arduino.github.io/arduino-cli/1.3/) para uso com a plataforma da placa ESP32.
+
+```sh
+CONFIG=/tmp/cli.yaml
+```
+
+Isso define uma variável **CONFIG** apontando para o arquivo temporário `**/tmp/cli.yaml**`, que será usado para armazenar a configuração do Arduino CLI.
+
+```sh
+arduino-cli config init --config-file $CONFIG
+```
+
+Isso inicializa um novo arquivo de configuração do Arduino CLI no local especificado por `**$CONFIG**`.
+
+```sh
+arduino-cli config set directories.user /opt/arduino --config-file $CONFIG
+arduino-cli config set directories.data /opt/arduino --config-file $CONFIG
+arduino-cli config set directories.downloads /opt/arduino/staging --config-file $CONFIG
+```
+
+Estas linhas configuram diferentes caminhos de diretório:
+
+* **directories.user**: onde dados do usuário, como esboços e bibliotecas, são armazenados.
+* **directories.data**: dados internos do Arduino (como núcleos instalados).
+* **directories.downloads**: arquivos temporários de download durante as instalações.
+
+Todos eles são definidos como subdiretórios em **/opt/arduino**.
+
+```sh
+arduino-cli config add board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json --config-file $CONFIG
+```
+
+Isso adiciona uma URL adicional ao índice do Gerenciador de Placas, especificamente para placas ESP32 fornecidas pela Espressif.
+
+Isso é necessário porque as placas ESP32 não são incluídas por padrão.
+
+```sh
+arduino-cli core update-index --config-file $CONFIG
+```
+
+Isso atualiza a lista de pacotes de placas disponíveis (núcleos) usando os URLs configurados.
+
+```sh
+arduino-cli core install esp32:esp32 --config-file $CONFIG
+```
+
+Isso instala o núcleo ESP32 para a plataforma Arduino, tornando possível compilar e carregar código para placas ESP32.
+
+Agora que temos uma maneira de compilar e enviar código, a questão é: qual código estamos compilando?
+
+O cliente micro-ROS não é apenas um esboço comum do Arduino. Ele depende de todo um ecossistema de bibliotecas do lado do cliente ROS 2.
+
+Essas bibliotecas incluem as definições de mensagens (std_msgs, sensor_msgs), a API principal do ROS (rcl), o executor leve (rclc) e a ponte de middleware (rmw_microxrcedds), bem como a lógica de transporte e serialização (como microxrcedds_client e micro_cdr).
+
+Reunir todas essas peças manualmente seria uma tarefa árdua. Elas devem ser compiladas na ordem correta, vinculadas corretamente e interoperar dentro do ambiente restrito de um microcontrolador.
+
+É aqui que entra a biblioteca [**micro_ros_arduino**](https://github.com/micro-ROS/micro_ros_arduino).
+
+A biblioteca micro_ros_arduino é um pacote cuidadosamente elaborado que reúne todos os componentes micro-ROS necessários em um formato compatível com o sistema de construção do Arduino. Ela fornece wrappers e APIs compatíveis com o Arduino que permitem escrever código no estilo familiar dos sketches do Arduino, enquanto ainda acessa o poder do ROS 2. No entanto, é importante entender que:
+
+**Esta biblioteca não é um aprimoramento de uso geral do Arduino.**
+
+Ela não fornece recursos como **digitalWrite()** ou **analogRead()**. Esses recursos ainda vêm do núcleo do Arduino ESP32, que é um pacote de plataforma separado mantido pela Espressif. O que o micro_ros_arduino faz é integrar a funcionalidade do ROS 2 ao modelo de programação do Arduino, permitindo que você construa nós ROS 2 em hardware que nunca foi projetado para essa tarefa.
+
+Nesse sentido, o micro_ros_arduino é a ligação entre o mundo embarcado e o mundo ROS — e permite que você construa uma imagem de firmware compatível com o Arduino e com suporte ao ROS 2.
+
+**Para usar o micro_ros_arduino, você precisa cloná-lo na pasta de bibliotecas do seu Arduino.**
+
+Isso normalmente é feito manualmente, pois a biblioteca depende de uma ramificação específica vinculada à sua distribuição ROS 2 (por exemplo, humble).
+
+No terminal, execute:
+
+```shell
+mkdir -p ~/microROS_Arduino/libraries
+cd ~/microROS_Arduino/libraries
+git clone -b humble https://github.com/micro-ROS/micro_ros_arduino.git
+```
+
+Isso coloca a integração micro-ROS do Arduino em uma estrutura que a CLI do Arduino entende.
+
+Agora, ao compilar seu esboço, você pode especificar esta pasta usando a flag --libraries, e a CLI do Arduino a incluirá no processo de construção.
+
+### Criando um cliente micro ros
+Com a biblioteca instalada, você pode criar o firmware — o código do cliente micro-ROS.
+
+Com a CLI do Arduino, esta etapa consiste na criação de um esboço do Arduino — um arquivo .ino — que você escreve em C++.
+
+No terminal, execute os seguintes comandos para criar o arquivo .ino.
+
+```shell
+mkdir -p ~/microROS_Arduino/microros_ping_node
+cd ~/microROS_Arduino/microros_ping_node
+touch microros_ping_node.ino
+chmod +x microros_ping_node.ino
+```
+
+Isso deve ter criado o arquivo onde estamos colocando a lógica do cliente microROS.
+
+Este cliente micro-ROS deve ser executado na sua placa ESP32 e implementar um padrão de comunicação pingue-pongue simples usando mensagens ROS 2.
+
+O ESP32 deve enviar uma mensagem no tópico **/ping** para um nó ROS 2 em execução no seu computador host. Esse nó responde no tópico **/pong**. Quando o ESP32 receber a resposta, ele deve enviar uma nova mensagem "ping". Essa troca continua indefinidamente.
+
+Agora, abra o arquivo que você acabou de criar e inclua o seguinte código:
+
+```c
+#include <WiFi.h>
+#include <micro_ros_arduino.h>
+#include <rcl/rcl.h>
+#include <rclc/executor.h>
+#include <rclc/rclc.h>
+#include <std_msgs/msg/string.h>
+
+char *ssid = "YourSSID";
+char *password = "YourPassword";
+char *agent_ip = "YourAgentIP"; 
+uint32_t agent_port = 8888; // Default micro-ROS agent port
+
+rcl_node_t node;
+rclc_support_t support;
+rcl_allocator_t allocator;
+rcl_publisher_t ping_pub;
+rcl_subscription_t pong_sub;
+rclc_executor_t executor;
+
+std_msgs__msg__String ping_msg;
+std_msgs__msg__String pong_msg;
+
+char ping_data[64];
+char data_buf[128];
+int ping_count = 0;
+
+#if defined(LED_BUILTIN)
+#define LED_PIN LED_BUILTIN
+#else
+#define LED_PIN 2
+#endif
+
+// --- Helpers ----------------------------------------------------
+
+bool connectWiFi(unsigned long timeout_ms = 15000) {
+  Serial.print("[WIFI] Connecting to SSID: ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, password);
+  unsigned long start = millis();
+  while (WiFi.status() != WL_CONNECTED) {
+    if (millis() - start > timeout_ms) {
+      Serial.println("\n[WIFI] Connect timeout");
+      return false;
+    }
+    Serial.print("...");
+    delay(500);
+  }
+  Serial.println();
+  Serial.print("[WIFI] Connected. IP Address: ");
+  Serial.println(WiFi.localIP());
+  return true;
+}
+
+void pingAgent(unsigned long ping_interval_ms = 1000) {
+  Serial.print("[MICROROS] Pinging agent at ");
+  Serial.print(agent_ip);
+  Serial.print(":");
+  Serial.print(agent_port);
+  Serial.print(" ");
+  // try every ping_interval_ms until success
+  while (rmw_uros_ping_agent(ping_interval_ms, 1) != RMW_RET_OK) {
+    Serial.print("...");
+    delay(200);
+  }
+  Serial.println("\n[MICROROS] Agent found!");
+}
+
+// --- Callbacks --------------------------------------------------
+
+// Callback when receiving a /pong
+void pong_callback(const void *msgin) {
+  Serial.println("[ESP32] pong_callback triggered");
+  const std_msgs__msg__String *pong = (const std_msgs__msg__String *)msgin;
+  Serial.printf("[ESP32] Got PONG: '%s'\n", pong->data.data);
+
+  // Send next ping
+  ping_count++;
+  snprintf(ping_data, sizeof(ping_data), "ping #%d", ping_count);
+  ping_msg.data.data = ping_data;
+  ping_msg.data.size = strlen(ping_data);
+  ping_msg.data.capacity = sizeof(ping_data);
+
+  Serial.printf("[ESP32] Sending PING: '%s'\n", ping_data);
+  rcl_publish(&ping_pub, &ping_msg, NULL);
+  delay(1000);
+}
+
+// --- Setup & Loop ----------------------------------------------
+
+void setup() {
+  Serial.begin(115200);
+  delay(500);
+
+  // LED blink to signal boot
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, HIGH);
+  delay(200);
+  digitalWrite(LED_PIN, LOW);
+
+  // Wi-Fi
+  if (!connectWiFi()) {
+    Serial.println("[SETUP] WiFi failed, halting.");
+    while (true) {
+      delay(1000);
+    }
+  }
+
+  // micro-ROS transport & agent
+  set_microros_wifi_transports(ssid, password, agent_ip, agent_port);
+  pingAgent();
+  Serial.println(" Agent is up!");
+
+  // rclc Initialization
+  allocator = rcl_get_default_allocator();
+  rclc_support_init(&support, 0, NULL, &allocator);
+  rclc_node_init_default(&node, "esp32_ping_node", "", &support);
+  Serial.println("Node initialized");
+
+  // Publisher & Subscription
+  rclc_publisher_init_default(
+      &ping_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
+      "/ping");
+  Serial.println("Success publisher");
+
+  std_msgs__msg__String__init(&pong_msg);
+  pong_msg.data.data =
+      data_buf; // you need a char buffer declared like: char data_buf[128];
+  pong_msg.data.capacity = sizeof(data_buf);
+  pong_msg.data.size = 0;
+
+  rclc_subscription_init_default(
+      &pong_sub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
+      "/pong");
+  Serial.println("Success subscriber");
+
+  // Prepare incoming message object
+  std_msgs__msg__String__init(&ping_msg);
+  ping_msg.data.data = ping_data;
+  ping_msg.data.capacity = sizeof(ping_data);
+  ping_msg.data.size = 0;
+
+  // Executor & Timer
+  rclc_executor_init(&executor, &support.context, 1, &allocator);
+  rclc_executor_add_subscription(&executor, &pong_sub, &pong_msg,
+                                 &pong_callback, ON_NEW_DATA);
+  Serial.println("Success excecutor");
+
+  // Send first ping
+  ping_count = 1;
+  snprintf(ping_data, sizeof(ping_data), "ping #%d", ping_count);
+  ping_msg.data.data = ping_data; // <-- this line is critical
+  ping_msg.data.size = strlen(ping_data);
+  ping_msg.data.capacity = sizeof(ping_data);
+  Serial.printf("[ESP32] Sending initial PING: '%s'\n", ping_data);
+  rcl_publish(&ping_pub, &ping_msg, NULL);
+
+  Serial.println("First ping sent");
+}
+
+void loop() {
+  if (ping_count == 1) {
+    Serial.println("We exited the setup");
+  }
+  rclc_executor_spin_some(&executor, RCL_MS_TO_NS(100));
+}
+```
+
+Vamos revisar cuidadosamente esse código juntos.
+
+```c
+#include <WiFi.h>
+#include <micro_ros_arduino.h>
+#include <rcl/rcl.h>
+#include <rclc/executor.h>
+#include <rclc/rclc.h>
+#include <std_msgs/msg/string.h>
+```
+
+Estas diretivas #include trazem as bibliotecas necessárias para:
+
+* WiFi.h: para conectar o ESP32 a uma rede sem fio.
+* micro_ros_arduino.h: para configurar a comunicação micro-ROS via UDP.
+* rcl e rclc: as bibliotecas de cliente ROS da camada C para inicializar nós, publicadores e assinaturas.
+* std_msgs/msg/string.h: para usar o tipo de mensagem String padrão do ROS 2.
+
