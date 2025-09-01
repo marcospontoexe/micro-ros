@@ -794,4 +794,68 @@ Os mais importantes são:
 
 Todos esses binários são necessários para uma implantação bem-sucedida. O bootloader do ESP32 espera arquivos específicos em deslocamentos de memória específicos e, se um estiver ausente ou posicionado incorretamente, a placa pode falhar na inicialização.
 
+### Instalando o firmware no ESP32
+A etapa final é a flash — copiar os binários compilados para a memória flash do ESP32. É isso que torna seu código "vivo" no chip.
 
+Então, para esta seção, vamos pegar o hardware correto, no nosso caso a **ESP32-S NodeMCU Wroom**.
+
+Ao conectar uma placa ESP32 ao seu computador usando um cabo USB, você não está se conectando diretamente ao chip ESP32. Em vez disso, você está se comunicando por meio de um chip conversor USB-serial soldado à placa. Este chip converte sinais USB em dados seriais que o ESP32 consegue entender.
+
+Os chips conversores mais comuns usados ​​em placas ESP32-WROOM-32 estilo NodeMCU são:
+
+* CP2102 – fabricado pela Silicon Labs.
+* CH340G – fabricado pela WCH.
+
+Você pode identificar o chip conversor examinando atentamente sua placa de desenvolvimento.
+
+Cada um desses chips pode exigir um driver para funcionar corretamente com o sistema USB do seu computador.
+
+Portanto, você deve identificar a ponte da sua placa.
+
+1. Conecte a placa
+2. Agora, abra um novo Terminal e execute: `dmesg | tail -n 20`
+3. Adicionar usuário ao grupo de discagem (opcional, mas recomendado)
+Para permitir acesso a **/dev/ttyUSB0** ou **/dev/ttyACM0** sem usar sudo, adicione seu usuário ao grupo dialout:
+4. Depois, saia e faça login novamente (ou reinicie).
+5. Verifique o dispositivo. Para verificar se o dispositivo está sendo reconhecido, execute o seguinte comando no terminal: `ls /dev/ttyUSB*` ou `ls /dev/ttyACM*`.
+Esta é a porta serial que sua ferramenta de flash deve usar.
+
+### Baixando a ferramenta de flashing
+Nesta seção, você aprenderá a atualizar sua placa ESP32 usando um executável pré-compilado, desenvolvido especialmente para este curso.
+
+Esta ferramenta foi projetada para ser fácil de usar, totalmente multiplataforma e compatível com os arquivos de firmware que você criou para o cliente microROS na seção anterior.
+
+A ferramenta funciona comunicando-se com o ESP32 por meio de uma porta serial (via USB) e usa o backend padrão do esptool para apagar o dispositivo e gravar os binários necessários:
+
+* o bootloader,
+* a tabela de partições e
+* o firmware do aplicativo.
+
+Uma vez concluído, ele pode, opcionalmente, iniciar um monitor serial ao vivo para que você possa visualizar a saída do dispositivo em tempo real.
+
+O primeiro passo será clonar o repositório do curso do Bitbucket dentro do seu espaço de trabalho no Construct.
+
+```shell
+cd ~
+git clone https://bitbucket.org/theconstructcore/microros_course_solutions.git
+```
+
+Agora você terá um diretório chamado **microros_course_solutions**. Dentro dele, você encontrará o diretório **excecutables/ESP32-NodeMCU**.
+
+Cada executável corresponde a um sistema operacional.
+
+* windows_flash_esp32.exe para Windows
+* mac_flash_esp32 para macOS
+* ubuntu_flash_esp32 para Linux
+
+Agora, você deve baixar no seu computador host os binários necessários para atualizar a placa.
+
+No mesmo diretório em que você baixou o arquivo .exe que fornecemos, crie uma nova pasta chamada microros_ping_node.
+
+Dentro dela, baixe os arquivos binários com os nomes:
+
+* bootloader.bin, para o bootloader.
+* partitions.bin, para o arquivo de partições.
+* firmware.bin ou ino.bin, para o arquivo de firmware.
+
+### Baixe os binários
