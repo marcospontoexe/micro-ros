@@ -579,3 +579,220 @@ Estas diretivas #include trazem as bibliotecas necessárias para:
 * rcl e rclc: as bibliotecas de cliente ROS da camada C para inicializar nós, publicadores e assinaturas.
 * std_msgs/msg/string.h: para usar o tipo de mensagem String padrão do ROS 2.
 
+```c
+char *ssid = "YourSSID";
+char *password = "YourPassword";
+char *agent_ip = "YourAgentIP"; 
+uint32_t agent_port = 8888; // Default micro-ROS agent port
+```
+
+Estas são variáveis ​​de configuração globais para Wi-Fi e o endereço IP e a porta do Agente micro-ROS.
+
+O agent_ip deve corresponder à máquina host que executa o micro_ros_agent.
+
+```c
+rcl_node_t node;
+rclc_support_t support;
+rcl_allocator_t allocator;
+rcl_publisher_t ping_pub;
+rcl_subscription_t pong_sub;
+rclc_executor_t executor;
+```
+
+Estas são as principais estruturas de dados no sistema micro-ROS:
+
+* rcl_node_t: representa o nó no grafo ROS 2 (esp32_ping_node).
+* rclc_support_t: contém o contexto de inicialização e as configurações do alocador de memória.
+* rcl_allocator_t: define como a memória é gerenciada para mensagens.
+* rcl_publisher_t / rcl_subscription_t: as interfaces para os tópicos /ping e /pong.
+* rclc_executor_t: gerencia o agendamento de retornos de chamada quando novos dados são recebidos.
+
+```c
+std_msgs__msg__String ping_msg;
+std_msgs__msg__String pong_msg;
+
+char ping_data[64];
+char data_buf[128];
+int ping_count = 0;
+```
+
+Aqui, definimos buffers e contadores de mensagens.
+
+* ping_msg e pong_msg são estruturas em C para o tipo de mensagem ROS std_msgs/String.
+* ping_data e data_buf são matrizes de caracteres em C (buffers) para armazenar dados de string para mensagens de entrada e saída.
+* ping_count é um contador simples para rotular cada mensagem de ping (por exemplo, "ping #1", "ping #2", etc.).
+
+```c
+#if defined(LED_BUILTIN)
+#define LED_PIN LED_BUILTIN
+#else
+#define LED_PIN 2
+#endif
+```
+
+Esta é a configuração dos pinos do LED.
+
+Preste atenção especial à configuração do LED!
+Você precisará disso mais adiante nesta unidade.
+
+Esta seção define qual pino GPIO o LED onboard usa.
+
+Se LED_BUILTIN for definido pela plataforma, use-o; caso contrário, use o padrão para GPIO 2 (que é o GPIO atribuído ao LED no NodeMCU).
+
+```c
+void pingAgent(unsigned long ping_interval_ms = 1000) {
+  Serial.print("[MICROROS] Pinging agent at ");
+  Serial.print(agent_ip);
+  Serial.print(":");
+  Serial.print(agent_port);
+  Serial.print(" ");
+  while (rmw_uros_ping_agent(ping_interval_ms, 1) != RMW_RET_OK) {
+    Serial.print("...");
+    delay(200);
+  }
+  Serial.println("\n[MICROROS] Agent found!");
+}
+```
+
+Esta função utiliza rmw_uros_ping_agent() para verificar ativamente se o Agente está online e acessível pela rede.
+
+Ela imprime pontos de status até que uma conexão seja confirmada.
+
+```c
+void pong_callback(const void *msgin) {
+  Serial.println("[ESP32] pong_callback triggered");
+  const std_msgs__msg__String *pong = (const std_msgs__msg__String *)msgin;
+  Serial.printf("[ESP32] Got PONG: '%s'\n", pong->data.data);
+
+  // Send next ping
+  ping_count++;
+  snprintf(ping_data, sizeof(ping_data), "ping #%d", ping_count);
+  ping_msg.data.data = ping_data;
+  ping_msg.data.size = strlen(ping_data);
+  ping_msg.data.capacity = sizeof(ping_data);
+
+  Serial.printf("[ESP32] Sending PING: '%s'\n", ping_data);
+  rcl_publish(&ping_pub, &ping_msg, NULL);
+  delay(1000);
+}
+```
+
+Esta função é chamada quando uma mensagem chega ao tópico /pong. Ela:
+
+* Imprime a mensagem recebida.
+* Incrementa o contador.
+* Formata uma nova mensagem de ping.
+* Publica-a no tópico `/ping usando rcl_publish()`.
+
+Observe a conversão de ponteiro de `const void *` para `std_msgs__msg__String *`. Isso é necessário porque o retorno de chamada usa uma interface de ponteiro genérica em C.
+
+```c
+allocator = rcl_get_default_allocator();
+rclc_support_init(&support, 0, NULL, &allocator);
+rclc_node_init_default(&node, "esp32_ping_node", "", &support);
+```
+
+Inicializa estruturas internas do micro-ROS, usando alocadores de memória padrão, e cria o nó esp32_ping_node.
+
+```c
+rclc_publisher_init_default(&ping_pub, &node,
+  ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String), "/ping");
+
+std_msgs__msg__String__init(&pong_msg);
+pong_msg.data.data = data_buf;
+pong_msg.data.capacity = sizeof(data_buf);
+pong_msg.data.size = 0;
+
+rclc_subscription_init_default(&pong_sub, &node,
+  ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String), "/pong");
+```
+
+Estas linhas configuram:
+
+* O publicador /ping.
+* O assinante /pong.
+* Buffers de memória para a mensagem pong_msg recebida.
+
+```c
+rclc_executor_init(&executor, &support.context, 1, &allocator);
+rclc_executor_add_subscription(&executor, &pong_sub, &pong_msg, &pong_callback, ON_NEW_DATA);
+```
+
+O executor é um pequeno escalonador que verifica se há novas mensagens recebidas e chama o retorno de chamada relevante quando uma chega.
+
+Aqui, ele está configurado para executar pong_callback quando uma nova mensagem /pong chega.
+
+```c
+ping_count = 1;
+snprintf(ping_data, sizeof(ping_data), "ping #%d", ping_count);
+ping_msg.data.data = ping_data;
+ping_msg.data.size = strlen(ping_data);
+ping_msg.data.capacity = sizeof(ping_data);
+Serial.printf("[ESP32] Sending initial PING: '%s'\n", ping_data);
+rcl_publish(&ping_pub, &ping_msg, NULL);
+```
+
+Este bloco envia "manualmente" o primeiro ping para iniciar o ciclo.
+
+Os pings subsequentes são tratados automaticamente no retorno de chamada.
+
+```c
+void loop() {
+  if (ping_count == 1) {
+    Serial.println("We exited the setup");
+  }
+  rclc_executor_spin_some(&executor, RCL_MS_TO_NS(100));
+}
+```
+
+Este é o loop principal de tempo de execução.
+
+A chamada para rclc_executor_spin_some() executa o executor e permite que ele verifique se há novas mensagens. A condição com ping_count é apenas uma impressão temporária para confirmar que a configuração foi concluída. É apenas uma etapa de depuração.
+
+### Building the Client with Arduino CLI
+Depois que seu esboço estiver escrito e salvo, você o compilará usando a CLI do Arduino.
+
+Esse processo envolve invocar a CLI com a configuração correta da placa, especificar o diretório do seu esboço e vinculá-lo à biblioteca micro-ROS do Arduino.
+
+No terminal, execute os seguintes comandos:
+
+```shell
+~/arduino_prepare.sh
+cd ~/microROS_Arduino/microros_ping_node
+arduino-cli compile \
+  --config-file /tmp/cli.yaml \
+  --fqbn esp32:esp32:nodemcu-32s \
+  --libraries ~/microROS_Arduino/libraries \
+  --output-dir ~/microROS_Arduino/microros_ping_node/build \
+  ~/microROS_Arduino/microros_ping_node
+```
+
+Vamos revisar as diferentes partes deste comando:
+
+* `~/arduino_prepare.sh`. Primeiro, executamos o arquivo de configuração necessário para preparar o ambiente.
+* `cd ~/microROS_Arduino/microros_ping_node`. Em seguida, movemos para o diretório onde o arquivo .ino está armazenado.
+* Finalmente, usamos o comando arduino-cli compile para compilar o firmware.
+* Aqui, a flag `--fqbn` informa à CLI para qual placa você está compilando — neste caso, a NodeMCU ESP32.
+* A flag `--libraries` inclui a biblioteca micro-ROS Arduino que você instalou anteriormente.
+* A flag `--output-dir` especifica onde colocar os artefatos de compilação.
+
+Ao executá-la, a CLI do Arduino invoca a cadeia de ferramentas do ESP32 para compilar seu esboço e todas as suas dependências.
+
+Isso inclui o tempo de execução do micro-ROS, o suporte a tipos de mensagens e quaisquer componentes de middleware.
+
+
+
+```sh
+#!/bin/bash
+CONFIG=/tmp/cli.yaml
+
+arduino-cli config init --config-file /tmp/cli.yaml
+arduino-cli config set directories.user /opt/arduino --config-file $CONFIG
+arduino-cli config set directories.data /opt/arduino --config-file $CONFIG
+arduino-cli config set directories.downloads /opt/arduino/staging --config-file $CONFIG
+arduino-cli config add board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json --config-file $CONFIG
+arduino-cli core update-index --config-file $CONFIG
+arduino-cli core install esp32:esp32 --config-file $CONFIG
+
+echo "✅ Arduino CLI is ready."
+```
