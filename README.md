@@ -780,9 +780,18 @@ Ao executá-la, a CLI do Arduino invoca a cadeia de ferramentas do ESP32 para co
 
 Isso inclui o tempo de execução do micro-ROS, o suporte a tipos de mensagens e quaisquer componentes de middleware.
 
+O resultado do processo de **compilação** é um conjunto de arquivos binários que podem ser enviados para o ESP32.
 
+Em seu ambiente de trabalho, você deverá conseguir ver os seguintes arquivos binários:
 
+![U2_workspace_structure_microrospingnode](https://github.com/marcospontoexe/micro-ros/blob/main/imagens/U2_workspace_structure_microrospingnode.png)
 
+Os mais importantes são:
 
+1. **firmware.bin** (ou **.ino.bin**): Este é o seu aplicativo **micro-ROS compilado**. Ele contém seu código e todas as bibliotecas vinculadas.
+2. **bootloader.bin**: Este é um pequeno binário que é executado primeiro quando o ESP32 é ligado. Ele inicializa o hardware, verifica a memória flash e carrega o aplicativo principal.
+3. **partitions.bin**: Este define como a memória flash do ESP32 é particionada — para o aplicativo, para atualizações OTA, para armazenamento não volátil, etc.
+
+Todos esses binários são necessários para uma implantação bem-sucedida. O bootloader do ESP32 espera arquivos específicos em deslocamentos de memória específicos e, se um estiver ausente ou posicionado incorretamente, a placa pode falhar na inicialização.
 
 
