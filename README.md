@@ -1538,3 +1538,21 @@ Launch serial monitor? [Y/n] (optionally: 'Y '): Y
 ```
 
 Pressione Y para monitorar a saída do ESP32 a 115200 bauds. Você deverá ver os logs de inicialização e o firmware em ação.
+
+# Timers e Executores no micro ros
+Um timer nos permite programar uma pequena função para ser executada a cada N milissegundos — sem bloquear o restante do sistema.
+
+Pense em um timer como se fosse um lembrete:
+
+"A cada 200 milissegundos, alternar o estado do LED."
+
+Enquanto isso, o PEDRITO está livre para:
+
+Acionar motores
+Responder a mensagens /cmd_vel
+Processar outros tópicos do ROS
+Isso é exatamente o que robôs de verdade precisam — controle paralelo e sem bloqueios.
+
+Vamos começar entendendo que tipo de mensagem usaremos para controlar os LEDs.
+
+Usaremos uma mensagem padrão do ROS 2 String publicada no tópico /led_control, onde cada mensagem é um comando como:
