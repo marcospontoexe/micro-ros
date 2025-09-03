@@ -246,7 +246,610 @@ Portanto, quando falamos do cliente micro-ROS, estamos nos referindo ao conjunto
 
 Este código do cliente é escrito em C e inclui todas as camadas essenciais do ROS 2: rcl, rclc, rmw, definições de mensagens e manipuladores de transporte — mas de forma reduzida e otimizada para executar em algumas centenas de quilobytes de memória.
 
-### Micro-ROS Arduino
+
+### Instalando o firmware no ESP32
+A etapa final é a flash — copiar os binários compilados para a memória flash do ESP32. É isso que torna seu código "vivo" no chip.
+
+Então, para esta seção, vamos pegar o hardware correto, no nosso caso a **ESP32-S NodeMCU Wroom**.
+
+Ao conectar uma placa ESP32 ao seu computador usando um cabo USB, você não está se conectando diretamente ao chip ESP32. Em vez disso, você está se comunicando por meio de um chip conversor USB-serial soldado à placa. Este chip converte sinais USB em dados seriais que o ESP32 consegue entender.
+
+Os chips conversores mais comuns usados ​​em placas ESP32-WROOM-32 estilo NodeMCU são:
+
+* CP2102 – fabricado pela Silicon Labs.
+* CH340G – fabricado pela WCH.
+
+Você pode identificar o chip conversor examinando atentamente sua placa de desenvolvimento.
+
+Cada um desses chips pode exigir um driver para funcionar corretamente com o sistema USB do seu computador.
+
+Portanto, você deve identificar a ponte da sua placa.
+
+1. Conecte a placa
+2. Agora, abra um novo Terminal e execute: `dmesg | tail -n 20`
+3. Adicionar usuário ao grupo de discagem (opcional, mas recomendado)
+Para permitir acesso a **/dev/ttyUSB0** ou **/dev/ttyACM0** sem usar sudo, adicione seu usuário ao grupo dialout:
+4. Depois, saia e faça login novamente (ou reinicie).
+5. Verifique o dispositivo. Para verificar se o dispositivo está sendo reconhecido, execute o seguinte comando no terminal: `ls /dev/ttyUSB*` ou `ls /dev/ttyACM*`.
+Esta é a porta serial que sua ferramenta de flash deve usar.
+
+### Passar o binário para o microcontrolador usando o PlataforIO IDE
+O PlatformIO IDE é uma extensão que transforma o Visual Studio Code em um ambiente de desenvolvimento integrado (IDE) profissional voltado para sistemas embarcados — como microcontroladores e placas IoT.
+
+Pelo plataformIo é possível compilar o código e passar o binário para o microcontrolador via cabo usb.
+
+#### micro-ros plataformio
+Esta é uma biblioteca micro-ROS para projetos bare metal baseada no platformIO.
+
+O processo de compilação para ROS 2 e micro-ROS é baseado em ferramentas personalizadas do sistema de meta-compilação e no CMake. O PlatformIO cuidará de todo o processo de compilação, incluindo dependências, compilação e vinculação.
+
+1. Primeiro instale o ambiente virtual do python3: `sudo apt install python3-venv`.
+2. Instale o CMake: `apt install -y git cmake python3-pip`.
+3. Na aba de extensões do vs cod procure por **plataformIO IDE**, e instale.
+4. Atualize o PlatformIO Core: `python3 -m pip install --upgrade platformio`.
+Feche o vs cod e execute no terminal os comandos:
+
+```shell
+rm -rf ~/.platformio
+rm -rf .pio
+pio platform install espressif32
+```
+
+5. Em **PIO Home**, clique em **New Project**. 
+  * Deve ser salvo em diretório que não possua espaço no nome (Area de trabalho por exemplo). 
+  * O **framework** Arduino é usado para escrever códigos em arduino c++. Nosso caso.
+  * O **framework** espidf é usado para escrever códigos em arduino c.
+6. Apos criar o projeto, abra o arquivo **platformio.ini** para configurar de acordo com a documentação do [micro_ros_platformio](https://github.com/micro-ROS/micro_ros_platformio). Talvez seja necessário instalar o
+
+```ini
+[env:denky32]
+platform = espressif32 @ ^6.12.0
+board = denky32
+framework = arduino
+
+# Configurações
+board_microros_distro = humble  # versão do ros2
+board_microros_transport = wifi   # comunicação entre o micro-ros e o agente ros
+lib_deps =
+    https://github.com/micro-ROS/micro_ros_platformio
+
+#No terminal do platformIO, no vs cod:
+#    pio lib install # Install dependencies (execute apenas na primeira vez)
+#    pio run # Build the firmware
+#    pio run --target upload # Flash the firmware
+#    pio run --target clean_microros  # Clean library
+```
+
+7. No arquivo **main.c** (para framework espidf), ou **main.cpp** (para o framwork Arduino) escreva o código que deseja compilar no microcontrolador.
+8. Compile e passe para o micro processador.
+
+Alguns comandos ulteis:
+* Execute uma limpeza completa do build para garantir que nada antigo seja referenciado: `pio run --target clean_microros`
+* compilar o projeto: `pio run`
+
+#### Código main.cpp
+
+```cpp
+#include <Arduino.h>
+#include <micro_ros_platformio.h>
+#include <rcl/rcl.h>
+#include <rclc/rclc.h>
+#include <rclc/executor.h>
+#include <WiFi.h>
+#include <IPAddress.h> // ALTERAÇÃO: Adicionado para clareza
+#include <std_msgs/msg/string.h>
+
+// ALTERAÇÃO: Use 'const char*' para strings literais para evitar warnings.
+const char *ssid = "33robotics";
+const char *password = "ponteaga";
+const char *agent_ip_str = "192.168.1.139"; // ALTERAÇÃO: Renomeado para indicar que é uma string
+uint32_t agent_port = 8888;
+
+// ALTERAÇÃO: Objeto IPAddress para o agente
+IPAddress agent_ip;
+
+rcl_node_t node;
+rclc_support_t support;
+rcl_allocator_t allocator;
+rcl_publisher_t ping_pub;
+rcl_subscription_t pong_sub;
+rclc_executor_t executor;
+
+std_msgs__msg__String ping_msg;
+std_msgs__msg__String pong_msg;
+
+char ping_data[64];
+char data_buf[128];
+int ping_count = 0;
+
+#if defined(LED_BUILTIN)
+#define LED_PIN LED_BUILTIN
+#else
+#define LED_PIN 2
+#endif
+
+// --- Helpers ----------------------------------------------------
+
+bool connectWiFi(unsigned long timeout_ms = 15000) {
+  Serial.print("[WIFI] Connecting to SSID: ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, password);
+  unsigned long start = millis();
+  while (WiFi.status() != WL_CONNECTED) {
+    if (millis() - start > timeout_ms) {
+      Serial.println("\n[WIFI] Connect timeout");
+      return false;
+    }
+    Serial.print("...");
+    delay(500);
+  }
+  Serial.println();
+  Serial.print("[WIFI] Connected. IP Address: ");
+  Serial.println(WiFi.localIP());
+  return true;
+}
+
+void pingAgent(unsigned long ping_interval_ms = 1000) {
+  Serial.print("[MICROROS] Pinging agent at ");
+  Serial.print(agent_ip_str); // Imprime a string para visualização
+  Serial.print(":");
+  Serial.print(agent_port);
+  Serial.print(" ");
+  // try every ping_interval_ms until success
+  while (rmw_uros_ping_agent(ping_interval_ms, 1) != RMW_RET_OK) {
+    Serial.print("...");
+    delay(200);
+  }
+  Serial.println("\n[MICROROS] Agent found!");
+}
+
+// --- Callbacks --------------------------------------------------
+
+void pong_callback(const void *msgin) {
+  Serial.println("[ESP32] pong_callback triggered");
+  const std_msgs__msg__String *pong = (const std_msgs__msg__String *)msgin;
+  Serial.printf("[ESP32] Got PONG: '%s'\n", pong->data.data);
+
+  // Send next ping
+  ping_count++;
+  snprintf(ping_data, sizeof(ping_data), "ping #%d", ping_count);
+  ping_msg.data.data = ping_data;
+  ping_msg.data.size = strlen(ping_data);
+  ping_msg.data.capacity = sizeof(ping_data);
+
+  Serial.printf("[ESP32] Sending PING: '%s'\n", ping_data);
+  rcl_publish(&ping_pub, &ping_msg, NULL);
+  delay(1000);
+}
+
+// --- Setup & Loop ----------------------------------------------
+
+void setup() {
+  Serial.begin(115200);
+  delay(500);
+
+  // LED blink to signal boot
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, HIGH);
+  delay(200);
+  digitalWrite(LED_PIN, LOW);
+
+  // Wi-Fi
+  if (!connectWiFi()) {
+    Serial.println("[SETUP] WiFi failed, halting.");
+    while (true) {
+      delay(1000);
+    }
+  }
+
+  // ALTERAÇÃO: Converter a string do IP para o objeto IPAddress
+  agent_ip.fromString(agent_ip_str);
+
+  // micro-ROS transport & agent
+  // ALTERAÇÃO: Passar o objeto IPAddress correto para a função
+  set_microros_wifi_transports((char*)ssid, (char*)password, agent_ip, agent_port);
+  pingAgent();
+  Serial.println(" Agent is up!");
+
+  // rclc Initialization
+  allocator = rcl_get_default_allocator();
+  rclc_support_init(&support, 0, NULL, &allocator);
+  rclc_node_init_default(&node, "esp32_ping_node", "", &support);
+  Serial.println("Node initialized");
+
+  // Publisher & Subscription
+  rclc_publisher_init_default(
+      &ping_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
+      "/ping");
+  Serial.println("Success publisher");
+
+  std_msgs__msg__String__init(&pong_msg);
+  pong_msg.data.data =
+      data_buf;
+  pong_msg.data.capacity = sizeof(data_buf);
+  pong_msg.data.size = 0;
+
+  rclc_subscription_init_default(
+      &pong_sub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
+      "/pong");
+  Serial.println("Success subscriber");
+
+  // Prepare incoming message object
+  std_msgs__msg__String__init(&ping_msg);
+  ping_msg.data.data = ping_data;
+  ping_msg.data.capacity = sizeof(ping_data);
+  ping_msg.data.size = 0;
+
+  // Executor & Timer
+  rclc_executor_init(&executor, &support.context, 1, &allocator);
+  rclc_executor_add_subscription(&executor, &pong_sub, &pong_msg,
+                                 &pong_callback, ON_NEW_DATA);
+  Serial.println("Success excecutor");
+
+  // Send first ping
+  ping_count = 1;
+  snprintf(ping_data, sizeof(ping_data), "ping #%d", ping_count);
+  ping_msg.data.data = ping_data;
+  ping_msg.data.size = strlen(ping_data);
+  ping_msg.data.capacity = sizeof(ping_data);
+  Serial.printf("[ESP32] Sending initial PING: '%s'\n", ping_data);
+  rcl_publish(&ping_pub, &ping_msg, NULL);
+
+  Serial.println("First ping sent");
+}
+
+void loop() {
+  if (ping_count == 1) {
+    Serial.println("We exited the setup");
+  }
+  rclc_executor_spin_some(&executor, RCL_MS_TO_NS(100));
+}
+```
+
+Vamos revisar cuidadosamente esse código juntos.
+
+```c
+#include <WiFi.h>
+#include <micro_ros_arduino.h>
+#include <rcl/rcl.h>
+#include <rclc/executor.h>
+#include <rclc/rclc.h>
+#include <std_msgs/msg/string.h>
+```
+
+Estas diretivas #include trazem as bibliotecas necessárias para:
+
+* WiFi.h: para conectar o ESP32 a uma rede sem fio.
+* micro_ros_arduino.h: para configurar a comunicação micro-ROS via UDP.
+* rcl e rclc: as bibliotecas de cliente ROS da camada C para inicializar nós, publicadores e assinaturas.
+* std_msgs/msg/string.h: para usar o tipo de mensagem String padrão do ROS 2.
+
+```c
+char *ssid = "YourSSID";
+char *password = "YourPassword";
+char *agent_ip = "YourAgentIP"; 
+uint32_t agent_port = 8888; // Default micro-ROS agent port
+```
+
+Estas são variáveis ​​de configuração globais para Wi-Fi e o endereço IP e a porta do Agente micro-ROS.
+
+O agent_ip deve corresponder à máquina host que executa o micro_ros_agent.
+
+```c
+rcl_node_t node;
+rclc_support_t support;
+rcl_allocator_t allocator;
+rcl_publisher_t ping_pub;
+rcl_subscription_t pong_sub;
+rclc_executor_t executor;
+```
+
+Estas são as principais estruturas de dados no sistema micro-ROS:
+
+* rcl_node_t: representa o nó no grafo ROS 2 (esp32_ping_node).
+* rclc_support_t: contém o contexto de inicialização e as configurações do alocador de memória.
+* rcl_allocator_t: define como a memória é gerenciada para mensagens.
+* rcl_publisher_t / rcl_subscription_t: as interfaces para os tópicos /ping e /pong.
+* rclc_executor_t: gerencia o agendamento de retornos de chamada quando novos dados são recebidos.
+
+```c
+std_msgs__msg__String ping_msg;
+std_msgs__msg__String pong_msg;
+
+char ping_data[64];
+char data_buf[128];
+int ping_count = 0;
+```
+
+Aqui, definimos buffers e contadores de mensagens.
+
+* ping_msg e pong_msg são estruturas em C para o tipo de mensagem ROS std_msgs/String.
+* ping_data e data_buf são matrizes de caracteres em C (buffers) para armazenar dados de string para mensagens de entrada e saída.
+* ping_count é um contador simples para rotular cada mensagem de ping (por exemplo, "ping #1", "ping #2", etc.).
+
+```c
+#if defined(LED_BUILTIN)
+#define LED_PIN LED_BUILTIN
+#else
+#define LED_PIN 2
+#endif
+```
+
+Esta é a configuração dos pinos do LED.
+
+Preste atenção especial à configuração do LED!
+Você precisará disso mais adiante nesta unidade.
+
+Esta seção define qual pino GPIO o LED onboard usa.
+
+Se LED_BUILTIN for definido pela plataforma, use-o; caso contrário, use o padrão para GPIO 2 (que é o GPIO atribuído ao LED no NodeMCU).
+
+```c
+void pingAgent(unsigned long ping_interval_ms = 1000) {
+  Serial.print("[MICROROS] Pinging agent at ");
+  Serial.print(agent_ip);
+  Serial.print(":");
+  Serial.print(agent_port);
+  Serial.print(" ");
+  while (rmw_uros_ping_agent(ping_interval_ms, 1) != RMW_RET_OK) {
+    Serial.print("...");
+    delay(200);
+  }
+  Serial.println("\n[MICROROS] Agent found!");
+}
+```
+
+Esta função utiliza rmw_uros_ping_agent() para verificar ativamente se o Agente está online e acessível pela rede.
+
+Ela imprime pontos de status até que uma conexão seja confirmada.
+
+```c
+void pong_callback(const void *msgin) {
+  Serial.println("[ESP32] pong_callback triggered");
+  const std_msgs__msg__String *pong = (const std_msgs__msg__String *)msgin;
+  Serial.printf("[ESP32] Got PONG: '%s'\n", pong->data.data);
+
+  // Send next ping
+  ping_count++;
+  snprintf(ping_data, sizeof(ping_data), "ping #%d", ping_count);
+  ping_msg.data.data = ping_data;
+  ping_msg.data.size = strlen(ping_data);
+  ping_msg.data.capacity = sizeof(ping_data);
+
+  Serial.printf("[ESP32] Sending PING: '%s'\n", ping_data);
+  rcl_publish(&ping_pub, &ping_msg, NULL);
+  delay(1000);
+}
+```
+
+Esta função é chamada quando uma mensagem chega ao tópico /pong. Ela:
+
+* Imprime a mensagem recebida.
+* Incrementa o contador.
+* Formata uma nova mensagem de ping.
+* Publica-a no tópico `/ping usando rcl_publish()`.
+
+Observe a conversão de ponteiro de `const void *` para `std_msgs__msg__String *`. Isso é necessário porque o retorno de chamada usa uma interface de ponteiro genérica em C.
+
+```c
+allocator = rcl_get_default_allocator();
+rclc_support_init(&support, 0, NULL, &allocator);
+rclc_node_init_default(&node, "esp32_ping_node", "", &support);
+```
+
+Inicializa estruturas internas do micro-ROS, usando alocadores de memória padrão, e cria o nó esp32_ping_node.
+
+```c
+rclc_publisher_init_default(&ping_pub, &node,
+  ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String), "/ping");
+
+std_msgs__msg__String__init(&pong_msg);
+pong_msg.data.data = data_buf;
+pong_msg.data.capacity = sizeof(data_buf);
+pong_msg.data.size = 0;
+
+rclc_subscription_init_default(&pong_sub, &node,
+  ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String), "/pong");
+```
+
+Estas linhas configuram:
+
+* O publicador /ping.
+* O assinante /pong.
+* Buffers de memória para a mensagem pong_msg recebida.
+
+```c
+rclc_executor_init(&executor, &support.context, 1, &allocator);
+rclc_executor_add_subscription(&executor, &pong_sub, &pong_msg, &pong_callback, ON_NEW_DATA);
+```
+
+O executor é um pequeno escalonador que verifica se há novas mensagens recebidas e chama o retorno de chamada relevante quando uma chega.
+
+Aqui, ele está configurado para executar pong_callback quando uma nova mensagem /pong chega.
+
+```c
+ping_count = 1;
+snprintf(ping_data, sizeof(ping_data), "ping #%d", ping_count);
+ping_msg.data.data = ping_data;
+ping_msg.data.size = strlen(ping_data);
+ping_msg.data.capacity = sizeof(ping_data);
+Serial.printf("[ESP32] Sending initial PING: '%s'\n", ping_data);
+rcl_publish(&ping_pub, &ping_msg, NULL);
+```
+
+Este bloco envia "manualmente" o primeiro ping para iniciar o ciclo.
+
+Os pings subsequentes são tratados automaticamente no retorno de chamada.
+
+```c
+void loop() {
+  if (ping_count == 1) {
+    Serial.println("We exited the setup");
+  }
+  rclc_executor_spin_some(&executor, RCL_MS_TO_NS(100));
+}
+```
+
+Este é o loop principal de tempo de execução.
+
+A chamada para rclc_executor_spin_some() executa o executor e permite que ele verifique se há novas mensagens. A condição com ping_count é apenas uma impressão temporária para confirmar que a configuração foi concluída. É apenas uma etapa de depuração.
+
+### Passar o binário para o microcontrolador com o **flash_tool**
+Este método é usado para transferir os arquivos binários para o microcontrolador usando **flash_tool**, crie um arquivo python chamado **flash_tool.py**:
+
+```python
+#!/usr/bin/env python3
+import sys
+import glob
+import os
+import esptool
+import serial
+import time
+
+# Change this to wherever you keep your firmware directories
+BASE_FIRMWARE_DIR = os.getcwd()
+
+#Esta função identifica todas as portas seriais disponíveis no sistema do usuário, dependendo do sistema operacional.
+#No Linux, ela procura por /dev/ttyUSB*, no macOS, por /dev/tty.* e, no Windows, verifica de COM1 a COM256.
+def list_serial_ports():
+    """Return a list of available serial ports on Windows, macOS, or Linux."""
+    if sys.platform.startswith('win'):
+        ports = [f'COM{i+1}' for i in range(256)]
+    elif sys.platform.startswith('darwin'):
+        ports = glob.glob('/dev/tty.*')
+    else:
+        ports = glob.glob('/dev/ttyUSB*') + glob.glob('/dev/ttyACM*')
+
+    available = []
+    for port in ports:
+        try:
+            with open(port):
+                pass
+            available.append(port)
+        except Exception:
+            continue
+    return available
+
+#Se houver apenas uma porta serial, ela será selecionada automaticamente. Caso contrário, o usuário será solicitado a escolher uma.
+def choose_port():
+    ports = list_serial_ports()
+    if not ports:
+        print("No serial ports found! Plug in your ESP32 and try again.")
+        sys.exit(1)
+    if len(ports) == 1:
+        print(f"Auto-detected port: {ports[0]}")
+        return ports[0]
+    print("Available serial ports:")
+    for idx, p in enumerate(ports, start=1):
+        print(f"  {idx}: {p}")
+    choice = input("Select port number: ")
+    try:
+        return ports[int(choice) - 1]
+    except Exception:
+        print("Invalid selection.")
+        sys.exit(1)
+
+#Esta função realiza o trabalho principal:
+#Confirma que bootloader.bin, partitions.bin e firmware.bin existem dentro da pasta selecionada.
+#Usa o módulo esptool para primeiro apagar a memória flash:
+def flash(project_dir, port):
+    """Erase flash and write bootloader, partition, and firmware bins."""
+    boot  = os.path.join(project_dir, "bootloader.bin") 
+    parts = os.path.join(project_dir, "partitions.bin") 
+    app   = os.path.join(project_dir, "firmware.bin")
+
+    for path in (boot, parts, app):
+        if not os.path.isfile(path):
+            print(f"Error: '{os.path.basename(path)}' not found in {project_dir}")
+            sys.exit(1)
+
+    print("Erasing flash…")
+    esptool.main(['--chip','esp32','--port',port,'erase_flash'])
+
+    #Em seguida, escreve os binários nos deslocamentos de memória padrão:
+    print("Writing binaries:")
+    print(f"  0x1000    {os.path.basename(boot)}")  # bootloader
+    print(f"  0x8000    {os.path.basename(parts)}") # partition table
+    print(f"  0x10000   {os.path.basename(app)}") # main firmware
+    esptool.main([
+        '--chip','esp32','--port',port,
+        'write_flash',
+        '0x1000',  boot,
+        '0x8000',  parts,
+        '0x10000', app
+    ])
+    print("Flash complete!")
+
+# Após a atualização, este recurso opcional abre uma conexão serial na taxa de transmissão especificada e começa a imprimir a saída do ESP32 em tempo real. Ele aguarda 2 segundos após a abertura da porta, o que dá tempo para o ESP32 reiniciar.
+#A saída é impressa até que você pressione Ctrl+C.
+def serial_monitor(port, baudrate=115200):
+    """Open a serial monitor on the specified port."""
+    print(f"\nStarting serial monitor on {port} (baudrate {baudrate})")
+    print("Press Ctrl+C to exit.\n")
+    try:
+        with serial.Serial(port, baudrate, timeout=1) as ser:
+            time.sleep(2)  # Wait for ESP32 to reset after flash
+            while True:
+                if ser.in_waiting:
+                    output = ser.read(ser.in_waiting).decode(errors='ignore')
+                    print(output, end='', flush=True)
+    except KeyboardInterrupt:
+        print("\nSerial monitor stopped.")
+    except Exception as e:
+        print(f"Error: {e}")
+
+def main():
+    #A função main() controla tudo:
+    #Sauda o usuário
+    #Solicita o nome da pasta que contém os arquivos .bin
+    #Detecta e confirma a porta serial
+    #Chama flash()
+    #Opcionalmente, inicia o monitor serial
+    #Captura exceções e exibe erros úteis
+    try:
+        print("🔧 Welcome to the ESP32 Flasher Tool!")
+        print("This tool flashes your ESP32 with bootloader, partitions, and firmware.\n")
+
+        if len(sys.argv) == 2:
+            project_name = sys.argv[1]
+        else:
+            project_name = input("Enter the name of the project folder (with .bin files): ").strip()
+
+        project_dir = os.path.join(BASE_FIRMWARE_DIR, project_name)
+
+        if not os.path.isdir(project_dir):
+            print(f"❌ Error: project directory '{project_dir}' does not exist.")
+            input("Press Enter to exit...")
+            sys.exit(1)
+
+        port = choose_port()
+        flash(project_dir, port)
+
+        answer = input("Launch serial monitor? [Y/n] (optionally: 'Y <baud_rate>'): ").strip().lower()
+        if answer.startswith('y'):
+            parts = answer.split()
+            baudrate = 115200
+            if len(parts) > 1:
+                try:
+                    baudrate = int(parts[1])
+                except ValueError:
+                    print("Invalid baud rate. Using default 115200.")
+            serial_monitor(port, baudrate)
+
+    except Exception as e:
+        print(f"\n❌ An unexpected error occurred:\n{e}")
+    finally:
+        input("\nPress Enter to exit...")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+
+Você pode executar este script diretamente de um terminal no seu computador se tiver o Python e as bibliotecas correspondentes instaladas, ou gerar um executável.
+
+#### Micro-ROS Arduino 
 Para executar o código do cliente micro-ROS no ESP32, precisamos compilar esse código em uma imagem de firmware binária e, em seguida, instalá-la na placa.
 
 É aqui que o ecossistema Arduino entra em cena.
@@ -371,7 +974,7 @@ Isso coloca a integração micro-ROS do Arduino em uma estrutura que a CLI do Ar
 
 Agora, ao compilar seu esboço, você pode especificar esta pasta usando a flag --libraries, e a CLI do Arduino a incluirá no processo de construção.
 
-### Criando um cliente micro ros
+#### Criando um cliente micro ros
 Com a biblioteca instalada, você pode criar o firmware — o código do cliente micro-ROS.
 
 Com a CLI do Arduino, esta etapa consiste na criação de um esboço do Arduino — um arquivo .ino — que você escreve em C++.
@@ -749,7 +1352,7 @@ Este é o loop principal de tempo de execução.
 
 A chamada para rclc_executor_spin_some() executa o executor e permite que ele verifique se há novas mensagens. A condição com ping_count é apenas uma impressão temporária para confirmar que a configuração foi concluída. É apenas uma etapa de depuração.
 
-### Building the Client with Arduino CLI
+#### Building the Client with Arduino CLI
 Depois que seu esboço estiver escrito e salvo, você o compilará usando a CLI do Arduino.
 
 Esse processo envolve invocar a CLI com a configuração correta da placa, especificar o diretório do seu esboço e vinculá-lo à biblioteca micro-ROS do Arduino.
@@ -794,68 +1397,144 @@ Os mais importantes são:
 
 Todos esses binários são necessários para uma implantação bem-sucedida. O bootloader do ESP32 espera arquivos específicos em deslocamentos de memória específicos e, se um estiver ausente ou posicionado incorretamente, a placa pode falhar na inicialização.
 
-### Instalando o firmware no ESP32
-A etapa final é a flash — copiar os binários compilados para a memória flash do ESP32. É isso que torna seu código "vivo" no chip.
+#### Baixe os binários
 
-Então, para esta seção, vamos pegar o hardware correto, no nosso caso a **ESP32-S NodeMCU Wroom**.
+Agora, você deve baixar no seu computador host os binários necessários para atualizar a placa, crie uma nova pasta chamada microros_ping_node.
 
-Ao conectar uma placa ESP32 ao seu computador usando um cabo USB, você não está se conectando diretamente ao chip ESP32. Em vez disso, você está se comunicando por meio de um chip conversor USB-serial soldado à placa. Este chip converte sinais USB em dados seriais que o ESP32 consegue entender.
-
-Os chips conversores mais comuns usados ​​em placas ESP32-WROOM-32 estilo NodeMCU são:
-
-* CP2102 – fabricado pela Silicon Labs.
-* CH340G – fabricado pela WCH.
-
-Você pode identificar o chip conversor examinando atentamente sua placa de desenvolvimento.
-
-Cada um desses chips pode exigir um driver para funcionar corretamente com o sistema USB do seu computador.
-
-Portanto, você deve identificar a ponte da sua placa.
-
-1. Conecte a placa
-2. Agora, abra um novo Terminal e execute: `dmesg | tail -n 20`
-3. Adicionar usuário ao grupo de discagem (opcional, mas recomendado)
-Para permitir acesso a **/dev/ttyUSB0** ou **/dev/ttyACM0** sem usar sudo, adicione seu usuário ao grupo dialout:
-4. Depois, saia e faça login novamente (ou reinicie).
-5. Verifique o dispositivo. Para verificar se o dispositivo está sendo reconhecido, execute o seguinte comando no terminal: `ls /dev/ttyUSB*` ou `ls /dev/ttyACM*`.
-Esta é a porta serial que sua ferramenta de flash deve usar.
-
-### Baixando a ferramenta de flashing
-Nesta seção, você aprenderá a atualizar sua placa ESP32 usando um executável pré-compilado, desenvolvido especialmente para este curso.
-
-Esta ferramenta foi projetada para ser fácil de usar, totalmente multiplataforma e compatível com os arquivos de firmware que você criou para o cliente microROS na seção anterior.
-
-A ferramenta funciona comunicando-se com o ESP32 por meio de uma porta serial (via USB) e usa o backend padrão do esptool para apagar o dispositivo e gravar os binários necessários:
-
-* o bootloader,
-* a tabela de partições e
-* o firmware do aplicativo.
-
-Uma vez concluído, ele pode, opcionalmente, iniciar um monitor serial ao vivo para que você possa visualizar a saída do dispositivo em tempo real.
-
-O primeiro passo será clonar o repositório do curso do Bitbucket dentro do seu espaço de trabalho no Construct.
-
-```shell
-cd ~
-git clone https://bitbucket.org/theconstructcore/microros_course_solutions.git
-```
-
-Agora você terá um diretório chamado **microros_course_solutions**. Dentro dele, você encontrará o diretório **excecutables/ESP32-NodeMCU**.
-
-Cada executável corresponde a um sistema operacional.
-
-* windows_flash_esp32.exe para Windows
-* mac_flash_esp32 para macOS
-* ubuntu_flash_esp32 para Linux
-
-Agora, você deve baixar no seu computador host os binários necessários para atualizar a placa.
-
-No mesmo diretório em que você baixou o arquivo .exe que fornecemos, crie uma nova pasta chamada microros_ping_node.
-
-Dentro dela, baixe os arquivos binários com os nomes:
+Dentro dela, baixe os arquivos binários renomeados com os nomes:
 
 * bootloader.bin, para o bootloader.
 * partitions.bin, para o arquivo de partições.
-* firmware.bin ou ino.bin, para o arquivo de firmware.
+* firmware.bin, para o arquivo de firmware.
 
-### Baixe os binários
+#### Executando o flash_tool
+Conecte sua placa ESP32 usando um cabo de transferência de dados USB de boa qualidade. Certifique-se de que ele seja reconhecido corretamente pelo seu sistema.
+
+Agora abra um terminal ou explorador de arquivos e navegue até a pasta onde você criou o python do flash_tool e do firmware (microros_ping_node). Execute o arquivo python pelo terminal: `python3 flash_tool.py`
+
+Depois de executar os comandos acima, você verá:
+
+```shell
+Welcome to the ESP32 Flasher Tool!
+This tool flashes your ESP32 with bootloader, partitions, and firmware.
+
+Enter the name of the project folder (with .bin files):
+```
+
+Agora digite o nome da pasta do firmware que você deseja instalar. Por exemplo: **microros_ping_node**. Caso os binários estejam no mesmo diretório do flash_tool, basta pressionar enter.
+
+A ferramenta detectará automaticamente sua porta serial. Se apenas uma for encontrada, ela prossegue. Se várias forem encontradas, ela mostra:
+
+```shell
+Available serial ports:
+  1: COM3
+  2: COM5
+Select port number:
+```
+
+Lembre-se de pressionar o botão de inicialização por alguns segundos enquanto atualizamos o firmware!
+
+Digite o número da porta conectada ao seu ESP32.
+
+Em seguida, o flash será iniciado.
+
+A maioria das placas de desenvolvimento ESP32 — incluindo a popular NodeMCU ESP32-WROOM-32 — vem com dois botões físicos identificados como:
+
+* BOOT (às vezes identificado como IO0 ou FLASH)
+* EN (abreviação de "Enable", às vezes identificado como RESET)
+
+Esses botões não são programáveis ​​pelo usuário como os encontrados em um projeto Arduino. Em vez disso, eles são conectados diretamente aos pinos de controle do chip ESP32 e são usados ​​para controlar manualmente os modos de inicialização e resets.
+
+O **botão EN** está conectado ao pino CHIP_PU (power-up) do ESP32. Ao pressioná-lo, você reinicia todo o ESP32, como se estivesse reiniciando um computador.
+
+Este botão:
+
+* Corta a energia momentaneamente para o chip ESP32
+* Faz com que o microcontrolador reinicie do zero
+* Se a flash contiver firmware válido, ele inicializará e funcionará normalmente
+
+Você deve usá-lo para:
+
+* Reiniciar o programa após a flash
+* Reinicializar manualmente a placa caso ela pare de responder
+* Às vezes, após conectar o monitor serial, para acionar a saída desde o início
+
+Por outro lado, o **botão BOOT** está conectado ao pino GPIO0 e sua função é controlar como o ESP32 inicializa quando é ligado ou reiniciado. O GPIO0 é um dos poucos pinos de conexão — pinos especiais que o ESP32 lê durante a inicialização para determinar seu modo de operação.
+
+Este botão:
+
+Quando pressionado durante a reinicialização ou a inicialização, o ESP32 entra no modo de download de firmware (também conhecido como "modo flash" ou "modo bootloader UART").
+
+Este modo permite que ferramentas externas como o esptool.py (usado dentro do seu flasher) carreguem binários pela conexão serial USB.
+
+Você deve usá-lo:
+
+* Ao colocar o ESP32 manualmente em modo flash
+* Se a sua placa não entrar automaticamente no modo flash ou o esptool falhar com um tempo limite
+
+Então, basicamente, quando o computador tentar flashear o ESP32, é muito importante que você pressione o botão de boot.
+
+* Mantenha pressionado o botão BOOT
+* Pressione e solte o botão EN
+* Em seguida, solte o botão BOOT
+
+Após uma atualização bem-sucedida, você deverá ver algo semelhante a isto:
+
+```shell
+Auto-detected port: COM4
+Erasing flash…
+esptool.py v4.8.1
+Serial port COM4
+Connecting..............
+Chip is ESP32-D0WD-V3 (revision v3.1)
+Features: WiFi, BT, Dual Core, 240MHz, VRef calibration in efuse, Coding Scheme None
+Crystal is 40MHz
+MAC: 14:2b:2f:db:01:c0
+Uploading stub...
+Running stub...
+Stub running...
+Erasing flash (this may take a while)...
+Chip erase completed successfully in 1.6s
+Hard resetting via RTS pin...
+Writing binaries:
+  0x1000    bootloader.bin
+  0x8000    partitions.bin
+  0x10000   firmware.bin
+esptool.py v4.8.1
+Serial port COM4
+Connecting.........
+Chip is ESP32-D0WD-V3 (revision v3.1)
+Features: WiFi, BT, Dual Core, 240MHz, VRef calibration in efuse, Coding Scheme None
+Crystal is 40MHz
+MAC: 14:2b:2f:db:01:c0
+Uploading stub...
+Running stub...
+Stub running...
+Configuring flash size...
+Flash will be erased from 0x00001000 to 0x00006fff...
+Flash will be erased from 0x00008000 to 0x00008fff...
+Flash will be erased from 0x00010000 to 0x000fafff...
+Compressed 23488 bytes to 15080...
+Wrote 23488 bytes (15080 compressed) at 0x00001000 in 1.5 seconds (effective 122.7 kbit/s)...
+Hash of data verified.
+Compressed 3072 bytes to 146...
+Wrote 3072 bytes (146 compressed) at 0x00008000 in 0.1 seconds (effective 469.7 kbit/s)...
+Hash of data verified.
+Compressed 959040 bytes to 619448...
+Wrote 959040 bytes (619448 compressed) at 0x00010000 in 56.9 seconds (effective 134.9 kbit/s)...
+Hash of data verified.
+
+Leaving...
+Hard resetting via RTS pin...
+Flash complete!
+```
+
+Após uma atualização bem-sucedida, você não só deverá ver o registro do terminal mostrado acima, como também o LED onboard do ESP32 deverá piscar, sinalizando que nosso programa foi iniciado.
+
+Em seguida, ele perguntará se você deseja ou não iniciar o monitor serial.
+
+```shell
+Launch serial monitor? [Y/n] (optionally: 'Y '): Y
+```
+
+Pressione Y para monitorar a saída do ESP32 a 115200 bauds. Você deverá ver os logs de inicialização e o firmware em ação.
