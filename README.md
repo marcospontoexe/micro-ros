@@ -1552,7 +1552,503 @@ Enquanto isso, o robo está livre para:
 * Responder a mensagens /cmd_vel
 * Processar outros tópicos do ROS
 
-Vamos começar entendendo que tipo de mensagem usaremos para controlar os LEDs.
+Veja a baixo um exemplo de código:
 
-Usaremos uma mensagem padrão do ROS 2 String publicada no tópico /led_control, onde cada mensagem é um comando como:
+```cpp
+#include <micro_ros_arduino.h>
 
+#include <WiFi.h>
+
+#include <rcl/rcl.h>
+#include <rclc/executor.h>
+#include <rclc/rclc.h>
+
+#include <geometry_msgs/msg/twist.h>
+#include <std_msgs/msg/string.h>
+
+// Wi-Fi and Agent
+char *ssid = "YourSSID";
+char *password = "YourPassword";
+char *agent_ip = "YourAgentIP"; 
+uint32_t agent_port = 8888; // Default micro-ROS agent port
+
+// ROS
+rcl_node_t node;
+rclc_support_t support;
+rcl_allocator_t allocator;
+rclc_executor_t executor;
+
+// MOTORS
+
+// MICRO ROS
+rcl_subscription_t cmd_vel_sub;
+geometry_msgs__msg__Twist cmd_vel_msg;
+
+// Motor pins
+const int MOTOR1_ENA = 4; // Right motor (PWM)
+const int MOTOR1_IN1 = 16;
+const int MOTOR1_IN2 = 17;
+const int MOTOR2_ENB = 19; // Left motor (PWM)
+const int MOTOR2_IN3 = 5;
+const int MOTOR2_IN4 = 18;
+
+// PWM config (New API)
+const int PWM_FREQ = 30000;   // 30 kHz
+const int PWM_RESOLUTION = 8; // 8-bit (0-255)
+const int MIN_SPEED = 150;    // below this, motors won't move
+const int MAX_SPEED = 215;    // full power
+
+// LEDs
+
+// micro-ROS handles
+rcl_subscription_t led_sub;
+rcl_timer_t led_timer;
+
+std_msgs__msg__String led_msg;
+char control_buf[64];
+
+// LED GPIOs
+const int RED_LED_PIN = 32;
+const int GREEN_LED_PIN = 33;
+
+// LED State Enum
+enum LedMode { OFF, ON, BLINK };
+LedMode red_led_mode = OFF;
+LedMode green_led_mode = OFF;
+
+bool red_led_state = false;
+bool green_led_state = false;
+
+// ONBOARD LED
+#ifndef LED_BUILTIN
+#define LED_BUILTIN 2
+#endif
+const int LED_PIN = LED_BUILTIN;
+
+// --- WiFi & Agent
+// ------------------------------------------------------------------
+
+bool connectWiFi(unsigned long timeout_ms = 15000) {
+  Serial.print("[WIFI] Connecting to SSID: ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, password);
+  unsigned long start = millis();
+  while (WiFi.status() != WL_CONNECTED) {
+    if (millis() - start > timeout_ms) {
+      Serial.println("\n[WIFI] Connect timeout");
+      return false;
+    }
+    Serial.print(".");
+    delay(500);
+  }
+  Serial.println("\n[WIFI] Connected. IP: " + WiFi.localIP().toString());
+  return true;
+}
+
+void pingAgent(unsigned long ping_interval_ms = 1000) {
+  Serial.print("[MICROROS] Pinging agent at ");
+  Serial.print(agent_ip);
+  Serial.print(":");
+  Serial.print(agent_port);
+  Serial.print(" ");
+  while (rmw_uros_ping_agent(ping_interval_ms, 1) != RMW_RET_OK) {
+    Serial.print(".");
+    delay(200);
+  }
+  Serial.println("\n[MICROROS] Agent found!");
+}
+
+// --- Motor Control
+// -----------------------------------------------------------------
+
+void setMotor(int IN1, int IN2, int pwm_pin, int speed) {
+  bool forward = speed >= 0;
+  int pwm = constrain(abs(speed), MIN_SPEED, MAX_SPEED);
+  digitalWrite(IN1, forward ? HIGH : LOW);
+  digitalWrite(IN2, forward ? LOW : HIGH);
+  ledcWrite(pwm_pin, pwm); // New API: pin-based
+}
+
+void moveMotors(int speed1, int speed2, int duration = -1) {
+  setMotor(MOTOR1_IN1, MOTOR1_IN2, MOTOR1_ENA, speed1);
+  setMotor(MOTOR2_IN3, MOTOR2_IN4, MOTOR2_ENB, speed2);
+  if (duration > 0) {
+    delay(duration);
+    stopMotors();
+  }
+}
+
+void stopMotors() {
+  digitalWrite(MOTOR1_IN1, LOW);
+  digitalWrite(MOTOR1_IN2, LOW);
+  digitalWrite(MOTOR2_IN3, LOW);
+  digitalWrite(MOTOR2_IN4, LOW);
+  ledcWrite(MOTOR1_ENA, 0);
+  ledcWrite(MOTOR2_ENB, 0);
+}
+
+void moveForward(int speed, int duration = -1) {
+  moveMotors(speed, speed, duration);
+}
+
+void moveBackward(int speed, int duration = -1) {
+  moveMotors(-speed, -speed, duration);
+}
+
+void turnLeft(int speed, int duration = -1) {
+  moveMotors(-speed, speed, duration);
+}
+
+void turnRight(int speed, int duration = -1) {
+  moveMotors(speed, -speed, duration);
+}
+
+void testMotors() {
+  Serial.println("[TEST] Starting motor test...");
+
+  Serial.println("→ Forward");
+  moveForward(MAX_SPEED, 2000);
+  delay(500);
+
+  Serial.println("→ Backward");
+  moveBackward(MAX_SPEED, 2000);
+  delay(500);
+
+  Serial.println("→ Turn Left");
+  turnLeft(MAX_SPEED, 2000);
+  delay(500);
+
+  Serial.println("→ Turn Right");
+  turnRight(MAX_SPEED, 2000);
+  delay(500);
+
+  stopMotors();
+  Serial.println("[TEST] Motor test complete.");
+}
+
+// --- ROS Callback
+// ------------------------------------------------------------------
+
+void cmd_vel_callback(const void *msgin) {
+  Serial.println("[ROS] cmd_vel_callback triggered");
+  const auto *cmd = (const geometry_msgs__msg__Twist *)msgin;
+
+  float linear = cmd->linear.x;
+  float angular = cmd->angular.z;
+
+  if (abs(linear) < 0.05)
+    linear = 0;
+  if (abs(angular) < 0.05)
+    angular = 0;
+
+  Serial.print("Received: linear=");
+  Serial.print(linear, 3);
+  Serial.print(" angular=");
+  Serial.println(angular, 3);
+
+  int speed = constrain(abs(linear * 255), MIN_SPEED, MAX_SPEED);
+  int turn = constrain(abs(angular * 255), MIN_SPEED, MAX_SPEED);
+
+  if (linear > 0) {
+    Serial.println("Moving forward");
+    moveForward(speed);
+  } else if (linear < 0) {
+    Serial.println("Moving backward");
+    moveBackward(speed);
+  } else if (angular > 0) {
+    Serial.println("Turning left");
+    turnLeft(turn);
+  } else if (angular < 0) {
+    Serial.println("Turning right");
+    turnRight(turn);
+  } else {
+    Serial.println("Stopping motors");
+    stopMotors();
+  }
+}
+
+void led_control_callback(const void *msgin) {
+  const std_msgs__msg__String *msg = (const std_msgs__msg__String *)msgin;
+  String cmd(msg->data.data);
+
+  Serial.print("[ROS] LED command: ");
+  Serial.println(cmd);
+
+  // Parse command like "red:on"
+  int sep = cmd.indexOf(":");
+  if (sep == -1)
+    return;
+
+  String led = cmd.substring(0, sep);
+  String mode = cmd.substring(sep + 1);
+
+  LedMode new_mode;
+  if (mode == "on")
+    new_mode = ON;
+  else if (mode == "off")
+    new_mode = OFF;
+  else if (mode == "blink")
+    new_mode = BLINK;
+  else
+    return;
+
+  if (led == "red") {
+    red_led_mode = new_mode;
+    if (new_mode != BLINK) {
+      digitalWrite(RED_LED_PIN, new_mode == ON ? HIGH : LOW);
+      red_led_state = (new_mode == ON);
+    }
+  } else if (led == "green") {
+    green_led_mode = new_mode;
+    if (new_mode != BLINK) {
+      digitalWrite(GREEN_LED_PIN, new_mode == ON ? HIGH : LOW);
+      green_led_state = (new_mode == ON);
+    }
+  }
+}
+
+void led_timer_callback(rcl_timer_t *timer, int64_t last_call_time) {
+  (void)last_call_time;
+  if (timer == NULL)
+    return;
+
+  if (red_led_mode == BLINK) {
+    red_led_state = !red_led_state;
+    digitalWrite(RED_LED_PIN, red_led_state ? HIGH : LOW);
+  }
+
+  if (green_led_mode == BLINK) {
+    green_led_state = !green_led_state;
+    digitalWrite(GREEN_LED_PIN, green_led_state ? HIGH : LOW);
+  }
+}
+
+// --- Auxiliary functions
+// ----------------------------------------------------------------------------
+void initSystem() {
+  Serial.begin(115200);
+  delay(500);
+
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, HIGH);
+  delay(200);
+  digitalWrite(LED_PIN, LOW);
+}
+
+void initCommunication() {
+  if (!connectWiFi()) {
+    Serial.println("[SETUP] WiFi failed. Halting.");
+    while (true)
+      delay(1000);
+  }
+
+  set_microros_wifi_transports(ssid, password, agent_ip, agent_port);
+  pingAgent();
+  Serial.println("micro-ROS agent ready");
+}
+
+void initMotors() {
+  pinMode(MOTOR1_IN1, OUTPUT);
+  pinMode(MOTOR1_IN2, OUTPUT);
+  pinMode(MOTOR2_IN3, OUTPUT);
+  pinMode(MOTOR2_IN4, OUTPUT);
+
+  ledcAttach(MOTOR1_ENA, PWM_FREQ, PWM_RESOLUTION);
+  ledcAttach(MOTOR2_ENB, PWM_FREQ, PWM_RESOLUTION);
+
+  Serial.println("Motors initialized");
+  testMotors();
+}
+
+void initLEDs() {
+  pinMode(RED_LED_PIN, OUTPUT);
+  pinMode(GREEN_LED_PIN, OUTPUT);
+
+  digitalWrite(RED_LED_PIN, HIGH);
+  delay(200);
+  digitalWrite(RED_LED_PIN, LOW);
+
+  digitalWrite(GREEN_LED_PIN, HIGH);
+  delay(200);
+  digitalWrite(GREEN_LED_PIN, LOW);
+  Serial.println("LEDs initialized");
+}
+
+// --- Setup
+// ----------------------------------------------------------------------------
+
+void setup() {
+
+  initSystem();
+  initCommunication();
+  initMotors();
+  initLEDs();
+
+  allocator = rcl_get_default_allocator();
+  rclc_support_init(&support, 0, NULL, &allocator);
+  rclc_node_init_default(&node, "esp32_motor_control_node", "", &support);
+
+  int num_handles = 0;
+
+  // /cmd_vel
+  geometry_msgs__msg__Twist__init(&cmd_vel_msg);
+  rclc_subscription_init_default(
+      &cmd_vel_sub, &node,
+      ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Twist), "/cmd_vel");
+
+  num_handles += 1;
+
+  // /led_control
+  std_msgs__msg__String__init(&led_msg);
+  led_msg.data.data = control_buf;
+  led_msg.data.capacity = sizeof(control_buf);
+  led_msg.data.size = 0;
+
+  rclc_subscription_init_default(
+      &led_sub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
+      "/led_control");
+
+  num_handles += 1;
+
+  // Timer
+  rclc_timer_init_default(&led_timer, &support, RCL_MS_TO_NS(200),
+                          led_timer_callback);
+
+  num_handles += 1;
+
+  // Executor (3 handles)
+  rclc_executor_init(&executor, &support.context, num_handles, &allocator);
+  rclc_executor_add_subscription(&executor, &cmd_vel_sub, &cmd_vel_msg,
+                                 cmd_vel_callback, ON_NEW_DATA);
+  rclc_executor_add_subscription(&executor, &led_sub, &led_msg,
+                                 led_control_callback, ON_NEW_DATA);
+  rclc_executor_add_timer(&executor, &led_timer);
+
+  Serial.println(
+      "[SETUP] Initialization complete. Robot ready. Entering loop.");
+}
+
+// --- Loop
+// -----------------------------------------------------------------------------
+
+void loop() {
+  rclc_executor_spin_some(&executor, RCL_MS_TO_NS(100));
+  delay(10);
+}
+```
+
+Vamos analisar algumas partes mais importantes:
+
+```cpp
+void led_timer_callback(rcl_timer_t *timer, int64_t last_call_time) {
+  (void)last_call_time;
+  if (timer == NULL)
+    return;
+
+  if (red_led_mode == BLINK) {
+    red_led_state = !red_led_state;
+    digitalWrite(RED_LED_PIN, red_led_state ? HIGH : LOW);
+  }
+
+  if (green_led_mode == BLINK) {
+    green_led_state = !green_led_state;
+    digitalWrite(GREEN_LED_PIN, green_led_state ? HIGH : LOW);
+  }
+}
+```
+
+Para fazer o timer do robo funcionar, você precisa atribuir a ele uma função de retorno de chamada — um trecho de código que será executado sempre que o timer disparar.
+
+Esta função alterna os LEDs vermelho e verde somente se eles estiverem no modo BLINK.
+
+Cada vez que o timer "dispara", esta função é chamada automaticamente. Você não a chama manualmente.
+
+```cpp
+(void)last_call_time;
+```
+
+Esta linha diz simplesmente "Não usarei **last_call_time**" e evita um aviso do compilador. Em alguns casos, você pode querer rastrear quanto tempo se passou desde a última chamada — mas não precisamos disso aqui.
+
+```cpp
+if (timer == NULL)
+  return;
+```
+
+Esta é apenas uma verificação de segurança — certifique-se de que o ponteiro não seja nulo.
+
+## Define the excecutor
+
+```cpp
+  rclc_executor_init(&executor, &support.context, num_handles, &allocator);
+```
+
+Por fim, definimos um executor.
+
+O executor é o despachador de eventos do micro-ROS. Pense nele como o "maestro" de uma orquestra:
+
+* Ele aguarda eventos: mensagens recebidas, temporizadores, serviços.
+* Quando algo acontece, ele chama a função apropriada.
+
+Vamos ver o significado dos diferentes parâmetros no executor:
+
+![tabela](https://github.com/marcospontoexe/micro-ros/blob/main/imagens/Captura%20de%20tela%20de%202025-09-04%2010-30-17.png)
+
+Neste ponto, dissemos ao micro-ROS:
+
+* "Vou monitorar 3 coisas — por favor, gerencie-as e despache-as corretamente."
+
+Mas! Ainda não dissemos ao executor quais são essas coisas.
+
+O executor precisa saber quantos itens gerenciará — por isso contamos com **num_handles**.
+
+Portanto, após criar cada um dos objetos, precisamos adicioná-los ao executor.
+
+```cpp
+rclc_executor_add_subscription(&executor, &cmd_vel_sub, &cmd_vel_msg, cmd_vel_callback, ON_NEW_DATA);
+```
+
+Isto diz:
+
+"Se uma nova mensagem /cmd_vel chegar, coloque-a em cmd_vel_msg e execute cmd_vel_callback()."
+
+```cpp
+rclc_executor_add_subscription(&executor, &led_sub, &led_msg, led_control_callback, ON_NEW_DATA);
+```
+
+Este escuta mensagens /led_control, analisa a string e define o comportamento do LED adequadamente.
+
+```cpp
+rclc_executor_add_timer(&executor, &led_timer);
+```
+
+Isso registra o temporizador de 200 ms criado anteriormente, para que o executor saiba que precisa chamar led_timer_callback() periodicamente.
+
+```cpp
+void loop() {
+  rclc_executor_spin_some(&executor, RCL_MS_TO_NS(100));
+  delay(10);
+}
+```
+
+Esta função é executada continuamente e repetidamente após a conclusão de setup().
+
+É o principal loop de eventos do programa, usado em firmwares do estilo Arduino para manter o programa ativo e responsivo.
+
+```cpp
+rclc_executor_spin_some(&executor, RCL_MS_TO_NS(100));
+```
+
+Esta linha é o coração da comunicação ROS do seu robô — ela processa quaisquer novas mensagens ROS e aciona seus retornos de chamada quando apropriado.
+
+* Esta função é fornecida pela Biblioteca de Cliente Micro-ROS (RCLC).
+* Sua função é verificar novos eventos (como mensagens recebidas ou temporizadores) e executar retornos de chamada para esses eventos.
+* No seu caso, ela está monitorando mensagens no tópico /cmd_vel.
+* &executor
+  * Uma referência ao objeto rclc_executor_t criado durante setup().
+* RCL_MS_TO_NS(100)
+  * Converte 100 milissegundos em nanossegundos, conforme exigido pela API.
+  * Isso define o tempo máximo que o executor pode bloquear durante a verificação de novos dados.
+  * Isso significa:
+    * O executor verificará novos dados por até 100 ms.
+    * Se encontrar dados, ele os processará.
+    * Caso contrário, ele retornará e deixará o programa continuar.
