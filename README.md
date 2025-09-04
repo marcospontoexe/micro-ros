@@ -1546,13 +1546,13 @@ Pense em um timer como se fosse um lembrete:
 
 "A cada 200 milissegundos, alternar o estado do LED."
 
-Enquanto isso, o PEDRITO está livre para:
+Enquanto isso, o robo está livre para:
 
-Acionar motores
-Responder a mensagens /cmd_vel
-Processar outros tópicos do ROS
-Isso é exatamente o que robôs de verdade precisam — controle paralelo e sem bloqueios.
+* Acionar motores
+* Responder a mensagens /cmd_vel
+* Processar outros tópicos do ROS
 
 Vamos começar entendendo que tipo de mensagem usaremos para controlar os LEDs.
 
 Usaremos uma mensagem padrão do ROS 2 String publicada no tópico /led_control, onde cada mensagem é um comando como:
+
